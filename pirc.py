@@ -2,61 +2,63 @@ import selectors
 import socket
 from sys import argv
 
-# Arguments: HOST PORT
-host, port = argv[-2], int(argv[-1])
-max_message_size = 1000
-max_pending_clients = 5
+class TcpServer:
+    def __init__(self, host="localhost", port=1234, max_message_size=1000, max_pending_clients=5) -> None:
+        self.host = host
+        self.port = port
+        self.max_pending_clients = max_pending_clients
+        self.max_message_size = max_message_size
 
-# Bind top-level listener for registering new client connections
-listener = socket.socket()
-listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) # Unnecessary
-listener.bind((host, port))
-listener.listen(max_pending_clients)
-listener.setblocking(False)
+    def run(self) -> None:
+        self.listener = socket.socket()
+        self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.listener.setblocking(False)
+        self.listener.bind((self.host, self.port))
+        self.listener.listen(self.max_pending_clients)
+        self.selector = selectors.DefaultSelector()
+        self.selector.register(self.listener, selectors.EVENT_READ)
+        while True:
+            events = self.selector.select()
+            for key, _mask in events:
+                if key.fileobj == self.listener: self.accept()
+                else: self.read(key.fileobj, key.data)
 
-selector = selectors.DefaultSelector()
+    def accept(self) -> None:
+        client, _address = self.listener.accept()
+        client_data = self.create_client_data(client)
+        client.setblocking(False)
+        self.selector.register(client, selectors.EVENT_READ, client_data)
+            
+    def read(self, client: socket.socket, client_data) -> None:
+        try:
+            message = client.recv(self.max_message_size)
+            if not message: raise
+            self.handle(client_data, message)
+        except:
+            # Treat all errors as disconnections
+            self.selector.unregister(client)
+            client.close()
 
-# Main message handler
-def process(data: bytes) -> None:
-    # Send to all sockets, except the top-level listener
-    print(f"Received: {repr(data)}")
-    for _f, k in selector.get_map().items():
-        client: socket.socket = k.fileobj
-        if not client == listener:
-            client.sendall(data)
+    def send(self, client: socket.socket, message: bytes):
+        client.sendall(message)
 
-# Helpers
-def client_add(listener: socket.socket) -> None:
-    client, _address = listener.accept()
-    client.setblocking(False)
-    selector.register(client, selectors.EVENT_READ)
-    print("Client connected!")
+    def broadcast(self, message: bytes):
+        for _f, k in self.selector.get_map().items():
+            if not k.fileobj == self.listener:
+                self.send(k.fileobj, message)
 
-def client_handle(client: socket.socket) -> None:
-    client = key.fileobj
-    try:
-        data = client.recv(max_message_size)
-        if not data:
-            # No input implies disconnected
-            raise
-        process(data)
-    except:
-        # Treat all errors as disconnections
-        print("Client disconnected!")
-        selector.unregister(client)
-        client.close()
+    def create_client_data(self, client: socket.socket):
+        raise NotImplementedError()
 
-# Add top-level listener to list for `select`
-selector.register(listener, selectors.EVENT_READ)
-print(f"Listening on {host}:{port}...")
+    def handle(self, client_data, message: bytes) -> None:
+        raise NotImplementedError()
 
-# Process events indefinitely
-while True:
-    events = selector.select()
-    for key, _mask in events:
-        if key.fileobj == listener:
-            # Top-level listener has a new client to add
-            client_add(listener)
-        else:
-            # Client has data ready for reading
-            client_handle(key.fileobj)
+class ChatServer(TcpServer):
+    def create_client_data(self, client):
+        return None
+    
+    def handle(self, client_data, message: bytes) -> None:
+        self.broadcast(message)
+
+server = ChatServer()
+server.run()
