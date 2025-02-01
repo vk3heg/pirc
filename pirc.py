@@ -22,6 +22,7 @@ class TcpServer:
         while True:
             events = self.selector.select()
             for key, _mask in events:
+                assert isinstance(key.fileobj, socket.socket)
                 if key.fileobj == self.listener: self.accept()
                 else: self.read(key.fileobj, key.data)
 
@@ -47,6 +48,7 @@ class TcpServer:
     def broadcast(self, message: bytes, excluded: socket.socket|None = None):
         for _f, k in self.selector.get_map().items():
             if not (k.fileobj == self.listener or k.fileobj == excluded):
+                assert isinstance(k.fileobj, socket.socket)
                 self.send(k.fileobj, message)
 
     def create_client_data(self, client: socket.socket):
@@ -111,12 +113,18 @@ class IrcServer(TcpServer):
         self.server_name = server_name
         self.version = 0.1
 
-    def send(self, client: socket.socket, message: str):
+    def encode(self, message: str) -> bytes:
+        return f"{message}\r\n".encode("ascii")
+
+    def send_text(self, client: socket.socket, message: str) -> None:
         print(f"-->   {message}")
-        return super().send(client, f"{message}\r\n".encode("ascii"))
+        super().send(client, self.encode(message))
+
+    def broadcast_text(self, message: str, exclude: socket.socket|None = None) -> None:
+        self.broadcast(self.encode(message), exclude)
     
-    def broadcast_others(self, client_data: ClientRegistration, message: str):
-        self.broadcast(message, client_data.client)
+    def broadcast_text_others(self, client_data: ClientRegistration, message: str) -> None:
+        self.broadcast_text(message, client_data.client)
 
     def create_client_data(self, client: socket.socket) -> ClientRegistration:
         return ClientRegistration(client)
@@ -129,7 +137,7 @@ class IrcServer(TcpServer):
             self.handle_command(client_data, Command(line))
     
     def reply(self, client_data: ClientRegistration, text: str) -> None:
-        self.send(client_data.client, text)
+        self.send_text(client_data.client, text)
 
     def reply_numeric(self, client_data: ClientRegistration, reply: Reply, text: str) -> None:
         self.reply(client_data, f"{str(reply.value).zfill(3)} {client_data.nick} {text}")
@@ -137,23 +145,27 @@ class IrcServer(TcpServer):
     def handle_command(self, client_data: ClientRegistration, command: Command) -> None:
         match command.command:
             case "CAP":
-                match command.subcommands[0]:
-                    case "LS":
-                        self.reply(client_data, "CAP * ACK")
+                if command.subcommands:
+                    match command.subcommands[0]:
+                        case "LS":
+                            self.reply(client_data, "CAP * ACK")
             case "NICK":
                 # TODO: Check for collision
-                client_data.nick = command.subcommands[0]
+                if command.subcommands and len(command.subcommands) >= 1:
+                    client_data.nick = command.subcommands[0]
             case "USER":
-                client_data.user = command.subcommands[0]
-                self.reply_numeric(client_data, Reply.Welcome, f":Welcome, {client_data.id()}")
-                self.reply_numeric(client_data, Reply.YourHost, f":Your host is {self.server_name}, running version {self.version}")
-                self.reply_numeric(client_data, Reply.Created, ":This server was created today")
-                self.reply_numeric(client_data, Reply.MyInfo, f"{self.server_name} {self.version}  ")
-                self.reply_numeric(client_data, Reply.ISupport, f"NETWORK={self.network_name} :are supported by this server")
-                # TODO: MOTD
-                self.reply_numeric(client_data, Reply.NoMotd, ":MOTD File is missing")
+                if command.subcommands and len(command.subcommands) >= 1:
+                    client_data.user = command.subcommands[0]
+                    self.reply_numeric(client_data, Reply.Welcome, f":Welcome, {client_data.id()}")
+                    self.reply_numeric(client_data, Reply.YourHost, f":Your host is {self.server_name}, running version {self.version}")
+                    self.reply_numeric(client_data, Reply.Created, ":This server was created today")
+                    self.reply_numeric(client_data, Reply.MyInfo, f"{self.server_name} {self.version}  ")
+                    self.reply_numeric(client_data, Reply.ISupport, f"NETWORK={self.network_name} :are supported by this server")
+                    # TODO: MOTD
+                    self.reply_numeric(client_data, Reply.NoMotd, ":MOTD File is missing")
             case "PING":
-                self.reply(client_data, f'PONG {" ".join(command.subcommands)}')
+                if command.subcommands:
+                    self.reply(client_data, f'PONG {" ".join(command.subcommands)}')
             case "JOIN":
                 # TODO: Manage channels and topics?
                 # TODO: Ensure starts with pound sign
@@ -167,16 +179,18 @@ class IrcServer(TcpServer):
                         self.reply_numeric(client_data, Reply.EndOfNames, f"{channel} :End of /NAMES list")
                         # TODO: Handle channel "0" as "part all"
             case "PART":
-                channels = command.subcommands[0].split(",")
-                for channel in channels:
-                    self.broadcast(f":{client_data.id()} PART {channel}")
+                if command.subcommands and len(command.subcommands) >= 1:
+                    channels = command.subcommands[0].split(",")
+                    for channel in channels:
+                        self.broadcast_text(f":{client_data.id()} PART {channel}")
             case "PRIVMSG":
                 # TODO: Only broadcast to clients in the given channel
-                channels = command.subcommands[0].split(",")
-                for channel in channels:
-                    # TODO: Support user messages too?
-                    # TODO: Shouldn't send to everyone
-                    self.broadcast_others(client_data, f":{client_data.id()} PRIVMSG {channel} :{command.content}")
+                if command.subcommands and len(command.subcommands) >= 1:
+                    channels = command.subcommands[0].split(",")
+                    for channel in channels:
+                        # TODO: Support user messages too?
+                        # TODO: Shouldn't send to everyone
+                        self.broadcast_text_others(client_data, f":{client_data.id()} PRIVMSG {channel} :{command.content}")
 
 server = IrcServer()
 server.run()
