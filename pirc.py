@@ -75,17 +75,9 @@ class Command:
     def __repr__(self):
         return f"Command: {self.command}, Subcommands: {repr(self.subcommands)}, Content: {self.content}"
 
-# IRC client tracking
-class State(Enum):
-    New = 1
-    Negotiating = 2
-    DoneNegotiating = 3
-    Registered = 4
-
 class ClientRegistration:
     def __init__(self, client: socket.socket) -> None:
         self.client = client
-        self.state = State.New
         self.nick = "?"
         self.user = "?"
         self.host = "internet"
@@ -131,9 +123,6 @@ class IrcServer(TcpServer):
                 match command.subcommands[0]:
                     case "LS":
                         self.reply(client_data, "CAP * ACK")
-                        client_data.state = State.Negotiating
-                    case "END":
-                        client_data.state = State.DoneNegotiating
             case "NICK":
                 # TODO: Check for duplicates?
                 client_data.nick = command.subcommands[0]
