@@ -1,6 +1,7 @@
 import re
 import selectors
 import socket
+from enum import Enum
 
 # Generic select-based TCP server
 class TcpServer:
@@ -83,6 +84,18 @@ class ClientRegistration:
     def id(self) -> str:
         return f"{self.nick}!{self.user}@{self.host}"
 
+# IRC numeric replies
+class Reply(Enum):
+    Welcome = 1
+    YourHost = 2
+    Created = 3
+    MyInfo = 4
+    ISupport = 5
+    Topic = 332
+    NameReply = 353
+    EndOfNames = 366
+    NoMotd = 422
+
 # Server
 class IrcServer(TcpServer):
     def __init__(
@@ -118,8 +131,8 @@ class IrcServer(TcpServer):
     def reply(self, client_data: ClientRegistration, text: str) -> None:
         self.send(client_data.client, text)
 
-    def reply_numeric(self, client_data: ClientRegistration, number: int, text: str) -> None:
-        self.reply(client_data, f"{str(number).zfill(3)} {client_data.nick} {text}")
+    def reply_numeric(self, client_data: ClientRegistration, reply: Reply, text: str) -> None:
+        self.reply(client_data, f"{str(reply.value).zfill(3)} {client_data.nick} {text}")
 
     def handle_command(self, client_data: ClientRegistration, command: Command) -> None:
         match command.command:
@@ -132,13 +145,13 @@ class IrcServer(TcpServer):
                 client_data.nick = command.subcommands[0]
             case "USER":
                 client_data.user = command.subcommands[0]
-                self.reply_numeric(client_data, 1, f":Welcome, {client_data.id()}")
-                self.reply_numeric(client_data, 2, f":Your host is {self.server_name}, running version {self.version}")
-                self.reply_numeric(client_data, 3, ":This server was created today")
-                self.reply_numeric(client_data, 4, f"{self.server_name} {self.version}  ")
-                self.reply_numeric(client_data, 5, f"NETWORK={self.network_name} :are supported by this server")
+                self.reply_numeric(client_data, Reply.Welcome, f":Welcome, {client_data.id()}")
+                self.reply_numeric(client_data, Reply.YourHost, f":Your host is {self.server_name}, running version {self.version}")
+                self.reply_numeric(client_data, Reply.Created, ":This server was created today")
+                self.reply_numeric(client_data, Reply.MyInfo, f"{self.server_name} {self.version}  ")
+                self.reply_numeric(client_data, Reply.ISupport, f"NETWORK={self.network_name} :are supported by this server")
                 # TODO: MOTD
-                self.reply_numeric(client_data, 422, ":MOTD File is missing")
+                self.reply_numeric(client_data, Reply.NoMotd, ":MOTD File is missing")
             case "PING":
                 self.reply(client_data, f'PONG {" ".join(command.subcommands)}')
             case "JOIN":
@@ -148,10 +161,10 @@ class IrcServer(TcpServer):
                     channels = command.subcommands[0].split(",")
                     for channel in channels:
                         self.reply(client_data, f":{client_data.id()} JOIN {channel}")
-                        self.reply_numeric(client_data, 332, f"{channel} :topic")
+                        self.reply_numeric(client_data, Reply.Topic, f"{channel} :topic")
                         # TODO: actually list users
-                        self.reply_numeric(client_data, 353, f"= {channel} :{client_data.nick}")
-                        self.reply_numeric(client_data, 366, f"{channel} :End of /NAMES list")
+                        self.reply_numeric(client_data, Reply.NameReply, f"= {channel} :{client_data.nick}")
+                        self.reply_numeric(client_data, Reply.EndOfNames, f"{channel} :End of /NAMES list")
                         # TODO: Handle channel "0" as "part all"
             case "PART":
                 channels = command.subcommands[0].split(",")
