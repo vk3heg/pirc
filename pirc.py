@@ -45,11 +45,17 @@ class TcpServer:
     def send(self, client: socket.socket, message: bytes):
         client.sendall(message)
 
-    def broadcast(self, message: bytes, excluded: socket.socket|None = None):
+    def enumerate_clients(self, excluded: socket.socket|None = None) -> list[tuple[socket.socket, type]]:
+        result = []
         for _f, k in self.selector.get_map().items():
             if not (k.fileobj == self.listener or k.fileobj == excluded):
                 assert isinstance(k.fileobj, socket.socket)
-                self.send(k.fileobj, message)
+                result.append((k.fileobj, k.data))
+        return result
+
+    def broadcast(self, message: bytes, excluded: socket.socket|None = None):
+        for client, _data in self.enumerate_clients(excluded):
+            self.send(client, message)
 
     def create_client_data(self, client: socket.socket):
         raise NotImplementedError()
@@ -183,13 +189,17 @@ class IrcServer(TcpServer):
                     for channel in channels:
                         self.broadcast_text(f":{client_data.id()} PART {channel}")
             case "PRIVMSG":
-                # TODO: Only broadcast to clients in the given channel
                 if command.subcommands and len(command.subcommands) >= 1:
-                    channels = command.subcommands[0].split(",")
-                    for channel in channels:
-                        # TODO: Support user messages too?
+                    targets = command.subcommands[0].split(",")
+                    for target in targets:
                         # TODO: Shouldn't send to everyone
-                        self.broadcast_text_others(client_data, f":{client_data.id()} PRIVMSG {channel} :{command.content}")
+                        message = f":{client_data.id()} PRIVMSG {target} :{command.content}"
+                        if target[0] == "#":
+                            self.broadcast_text_others(client_data, message)
+                        else:
+                            for target_client, _target_client_data in filter(lambda t: t[1].nick == target, self.enumerate_clients()):
+                                self.send_text(target_client, message)
+
 
 server = IrcServer()
 server.run()
