@@ -114,7 +114,7 @@ class IrcServer(TcpServer):
         self.version = 0.1
 
     def encode(self, message: str) -> bytes:
-        return f"{message}\r\n".encode("ascii")
+        return f"{message}\r\n".encode("utf-8")
 
     def send_text(self, client: socket.socket, message: str) -> None:
         print(f"-->   {message}")
@@ -130,8 +130,7 @@ class IrcServer(TcpServer):
         return ClientRegistration(client)
     
     def handle(self, client_data: ClientRegistration, message: bytes) -> None:
-        # TODO: Support non-ASCII or advertise ASCII-only somehow
-        text = message.decode("ascii")
+        text = message.decode("utf-8")
         lines = text.strip().split("\r\n")
         for line in lines:
             self.handle_command(client_data, Command(line))
