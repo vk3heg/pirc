@@ -1,8 +1,6 @@
 import re
 import selectors
 import socket
-from enum import Enum
-from sys import argv
 
 # Generic select-based TCP server
 class TcpServer:
@@ -62,7 +60,7 @@ command_pattern = r"^(?P<source>:[a-zA-Z0-9@#*_.+!\-]+ )?(?P<command>[A-Z]+)(?P<
 class Command:
     def __init__(self, text: str) -> None:
         # Parse message
-        print(f"In: {text}")
+        print(f"<-- {text}")
         match = re.match(command_pattern, text)
         if not match: raise SyntaxError("Invalid message received!")
         source = match["source"]
@@ -87,14 +85,21 @@ class ClientRegistration:
 
 # Server
 class IrcServer(TcpServer):
-    def __init__(self, host="localhost", port=1234, max_pending_clients=5, network_name="pircnet", server_name="pirc"):
+    def __init__(
+            self,
+            host="localhost",
+            port=1234,
+            max_pending_clients=5,
+            network_name="pircnet",
+            server_name="pirc",
+            ):
         super().__init__(host, port, 512, max_pending_clients)
         self.network_name = network_name
         self.server_name = server_name
         self.version = 0.1
 
     def send(self, client: socket.socket, message: str):
-        print(f"Out: {message}")
+        print(f"-->   {message}")
         return super().send(client, f"{message}\r\n".encode("ascii"))
     
     def broadcast_others(self, client_data: ClientRegistration, message: str):
@@ -104,7 +109,7 @@ class IrcServer(TcpServer):
         return ClientRegistration(client)
     
     def handle(self, client_data: ClientRegistration, message: bytes) -> None:
-        # TODO: Support non-ASCII
+        # TODO: Support non-ASCII or advertise ASCII-only somehow
         text = message.decode("ascii")
         lines = text.strip().split("\r\n")
         for line in lines:
@@ -117,14 +122,13 @@ class IrcServer(TcpServer):
         self.reply(client_data, f"{str(number).zfill(3)} {client_data.nick} {text}")
 
     def handle_command(self, client_data: ClientRegistration, command: Command) -> None:
-        print(f"Received: {repr(command)}")
         match command.command:
             case "CAP":
                 match command.subcommands[0]:
                     case "LS":
                         self.reply(client_data, "CAP * ACK")
             case "NICK":
-                # TODO: Check for duplicates?
+                # TODO: Check for collision
                 client_data.nick = command.subcommands[0]
             case "USER":
                 client_data.user = command.subcommands[0]
