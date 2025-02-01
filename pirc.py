@@ -45,9 +45,9 @@ class TcpServer:
     def send(self, client: socket.socket, message: bytes):
         client.sendall(message)
 
-    def broadcast(self, message: bytes):
+    def broadcast(self, message: bytes, excluded: socket.socket|None = None):
         for _f, k in self.selector.get_map().items():
-            if not k.fileobj == self.listener:
+            if not (k.fileobj == self.listener or k.fileobj == excluded):
                 self.send(k.fileobj, message)
 
     def create_client_data(self, client: socket.socket):
@@ -56,7 +56,7 @@ class TcpServer:
     def handle(self, client_data, message: bytes) -> None:
         raise NotImplementedError()
 
-# Command parser
+# IRC command parser
 command_pattern = r"^(?P<source>:[a-zA-Z0-9@#*_.+!\-]+ )?(?P<command>[A-Z]+)(?P<subcommands>( [a-zA-Z0-9@#*_.+!\-]+)*)( :(?P<content>.*))?$"
 
 class Command:
@@ -75,7 +75,7 @@ class Command:
     def __repr__(self):
         return f"Command: {self.command}, Subcommands: {repr(self.subcommands)}, Content: {self.content}"
 
-# Client tracking
+# IRC client tracking
 class State(Enum):
     New = 1
     Negotiating = 2
@@ -104,6 +104,9 @@ class IrcServer(TcpServer):
     def send(self, client: socket.socket, message: str):
         print(f"Out: {message}")
         return super().send(client, f"{message}\r\n".encode("ascii"))
+    
+    def broadcast_others(self, client_data: ClientRegistration, message: str):
+        self.broadcast(message, client_data.client)
 
     def create_client_data(self, client: socket.socket) -> ClientRegistration:
         return ClientRegistration(client)
@@ -160,15 +163,14 @@ class IrcServer(TcpServer):
             case "PART":
                 channels = command.subcommands[0].split(",")
                 for channel in channels:
-                    self.reply(client_data, f"PART {channel}")
+                    self.broadcast(f":{client_data.id()} PART {channel}")
             case "PRIVMSG":
                 # TODO: Only broadcast to clients in the given channel
                 channels = command.subcommands[0].split(",")
                 for channel in channels:
                     # TODO: Support user messages too?
                     # TODO: Shouldn't send to everyone
-                    # TODO: Don't send to the sender, I guess...
-                    self.broadcast(f":{client_data.id()} PRIVMSG {channel} :{command.content}")
+                    self.broadcast_others(client_data, f":{client_data.id()} PRIVMSG {channel} :{command.content}")
 
 server = IrcServer()
 server.run()
