@@ -85,6 +85,7 @@ class Command:
 class ClientRegistration:
     def __init__(self, client: socket.socket) -> None:
         self.client = client
+        # TODO: Random nick/user/host by default
         self.nick = "?"
         self.user = "?"
         self.host = "internet"
@@ -99,6 +100,9 @@ class Reply(Enum):
     Created = 3
     MyInfo = 4
     ISupport = 5
+    ListStart = 321
+    List = 322
+    ListEnd = 323
     Topic = 332
     NameReply = 353
     EndOfNames = 366
@@ -118,6 +122,7 @@ class IrcServer(TcpServer):
         self.network_name = network_name
         self.server_name = server_name
         self.version = 0.1
+        self.channels: dict[str, list[ClientRegistration]] = dict()
 
     def encode(self, message: str) -> bytes:
         return f"{message}\r\n".encode("utf-8")
@@ -125,6 +130,14 @@ class IrcServer(TcpServer):
     def send_text(self, client: socket.socket, message: str) -> None:
         print(f"-->   {message}")
         super().send(client, self.encode(message))
+
+    def send_text_each(self, clients: list[ClientRegistration], message: str, excluded: ClientRegistration|None = None) -> None:
+        # TODO: If a send fails, disconnect *that* client and not the sender!
+        bytes = self.encode(message)
+        for client_data in clients:
+            if not client_data == excluded:
+                # TODO: This skips logging!
+                self.send(client_data.client, bytes)
 
     def broadcast_text(self, message: str, exclude: socket.socket|None = None) -> None:
         self.broadcast(self.encode(message), exclude)
@@ -147,6 +160,11 @@ class IrcServer(TcpServer):
     def reply_numeric(self, client_data: ClientRegistration, reply: Reply, text: str) -> None:
         self.reply(client_data, f"{str(reply.value).zfill(3)} {client_data.nick} {text}")
 
+    def channel_get(self, channel: str) -> list[ClientRegistration]:
+        if not channel in self.channels:
+            self.channels[channel] = []
+        return self.channels[channel]
+
     def handle_command(self, client_data: ClientRegistration, command: Command) -> None:
         match command.command:
             case "CAP":
@@ -156,6 +174,7 @@ class IrcServer(TcpServer):
                             self.reply(client_data, "CAP * ACK")
             case "NICK":
                 # TODO: Check for collision
+                # TODO: Truncate, if needed
                 if command.subcommands and len(command.subcommands) >= 1:
                     client_data.nick = command.subcommands[0]
             case "USER":
@@ -172,30 +191,44 @@ class IrcServer(TcpServer):
                 if command.subcommands:
                     self.reply(client_data, f'PONG {" ".join(command.subcommands)}')
             case "JOIN":
-                # TODO: Manage channels and topics?
-                # TODO: Ensure starts with pound sign
+                # TODO: Manage topics?
                 if command.subcommands:
                     channels = command.subcommands[0].split(",")
                     for channel in channels:
-                        self.reply(client_data, f":{client_data.id()} JOIN {channel}")
-                        self.reply_numeric(client_data, Reply.Topic, f"{channel} :topic")
-                        # TODO: actually list users
-                        self.reply_numeric(client_data, Reply.NameReply, f"= {channel} :{client_data.nick}")
-                        self.reply_numeric(client_data, Reply.EndOfNames, f"{channel} :End of /NAMES list")
                         # TODO: Handle channel "0" as "part all"
+                        if len(channel) >= 1 and channel[0] == "#":
+                            clients = self.channel_get(channel)
+                            if not client_data in clients:
+                                clients.append(client_data)
+                                self.send_text_each(clients, f":{client_data.id()} JOIN {channel}")
+                                self.reply_numeric(client_data, Reply.Topic, f"{channel} :topic")
+                                # TODO: Split nick list, if needed
+                                self.reply_numeric(client_data, Reply.NameReply, f"= {channel} :{",".join([c.nick for c in clients])}")
+                                self.reply_numeric(client_data, Reply.EndOfNames, f"{channel} :End of /NAMES list")
+            # TODO: QUIT message
             case "PART":
                 if command.subcommands and len(command.subcommands) >= 1:
                     channels = command.subcommands[0].split(",")
                     for channel in channels:
-                        self.broadcast_text(f":{client_data.id()} PART {channel}")
+                        if len(channel) >= 1 and channel[0] == "#" and channel in self.channels and client_data in self.channels[channel]:
+                            clients = self.channels[channel]
+                            clients.remove(client_data)
+                            self.broadcast_text(f":{client_data.id()} PART {channel}")
+                            if len(clients) <= 0:
+                                del self.channels[channel]
+            case "LIST":
+                self.reply_numeric(client_data, Reply.ListStart, "Channel :Users  Name")
+                for channel, clients in self.channels.items():
+                    self.reply_numeric(client_data, Reply.List, f"{channel} {len(clients)} :")
+                self.reply_numeric(client_data, Reply.ListEnd, "End of /LIST")
             case "PRIVMSG":
                 if command.subcommands and len(command.subcommands) >= 1:
                     targets = command.subcommands[0].split(",")
                     for target in targets:
-                        # TODO: Shouldn't send to everyone
                         message = f":{client_data.id()} PRIVMSG {target} :{command.content}"
-                        if target[0] == "#":
-                            self.broadcast_text_others(client_data, message)
+                        if len(target) >= 1 and target[0] == "#":
+                            if target in self.channels and client_data in self.channels[target]:
+                                self.send_text_each(self.channels[target], message, client_data)
                         else:
                             for target_client, _target_client_data in filter(lambda t: t[1].nick == target, self.enumerate_clients()):
                                 self.send_text(target_client, message)
