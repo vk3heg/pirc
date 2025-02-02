@@ -1,8 +1,14 @@
+import logging
 import re
 import selectors
 import socket
 from _collections_abc import Iterable
 from enum import Enum
+from os import environ
+
+# Note: You can set PIRC_LOG_LEVEL=10 to enable DEBUG (10) level logging
+log = logging.getLogger("pirc")
+logging.basicConfig(level = environ.get("PIRC_LOG_LEVEL", logging.INFO))
 
 # Generic select-based TCP server
 class TcpServer:
@@ -20,6 +26,7 @@ class TcpServer:
         self.listener.listen(self.max_pending_clients)
         self.selector = selectors.DefaultSelector()
         self.selector.register(self.listener, selectors.EVENT_READ)
+        log.info(f"Listening on: {self.host}:{self.port}")
         while True:
             events = self.selector.select()
             for key, _mask in events:
@@ -40,10 +47,11 @@ class TcpServer:
     def read(self, client: socket.socket, client_data) -> None:
         try:
             message = client.recv(self.max_message_size)
-            if not message: raise
+            if not message: raise ConnectionError()
             self.handle(client_data, message)
-        except:
+        except Exception as e:
             # Treat all errors as disconnections
+            log.warning("Exception while handling read", exc_info=e)
             self.remove_client(client)
 
     def send(self, client: socket.socket, message: bytes):
@@ -128,12 +136,15 @@ class IrcServer(TcpServer):
         return f"{message}\r\n".encode("utf-8")
 
     def send_text_each(self, clients: Iterable[ClientRegistration], message: str, excluded: ClientRegistration|None = None) -> None:
-        # TODO: If a send fails, disconnect *that* client and not the sender!
-        print(f"-->  {message}")
+        log.debug(f"-->  {message}")
         bytes = self.encode(message)
         for client_data in clients:
             if not client_data == excluded:
-                self.send(client_data.client, bytes)
+                try:
+                    self.send(client_data.client, bytes)
+                except Exception as e:
+                    log.warning("Exception while sending; disconnecting client", exc_info=e)
+                    self.remove_client(client_data.client)
 
     def create_client_data(self, client: socket.socket) -> ClientRegistration:
         return ClientRegistration(client)
@@ -142,7 +153,7 @@ class IrcServer(TcpServer):
         text = message.decode("utf-8")
         lines = text.strip().split("\r\n")
         for line in lines:
-            print(f"<-- {line}")
+            log.debug(f"<-- {line}")
             self.handle_command(client_data, Command(line))
     
     def reply(self, client_data: ClientRegistration, text: str) -> None:
@@ -213,7 +224,7 @@ class IrcServer(TcpServer):
                 if command.subcommands:
                     channels = command.subcommands[0].split(",")
                     for channel in channels:
-                        # TODO: Handle channel "0" as "part all"
+                        # TODO: Handle channel "0" as "part all"?
                         if len(channel) >= 1 and channel[0] == "#":
                             if not channel in client_data.channels:
                                 client_data.channels.append(channel)
