@@ -1,14 +1,16 @@
 import logging
+import random
 import re
 import selectors
 import socket
+import string
 from _collections_abc import Iterable
 from enum import Enum
 from os import environ
 
 # Note: You can set PIRC_LOG_LEVEL=10 to enable DEBUG (10) level logging
 log = logging.getLogger("pirc")
-logging.basicConfig(level = environ.get("PIRC_LOG_LEVEL", logging.INFO))
+logging.basicConfig(level = int(environ.get("PIRC_LOG_LEVEL", logging.INFO)))
 
 # Generic select-based TCP server
 class TcpServer:
@@ -89,17 +91,24 @@ class Command:
     def __repr__(self):
         return f"Command: {self.command}, Subcommands: {repr(self.subcommands)}, Content: {self.content}"
 
+# IRC client representation
+def random_id() -> str:
+    return "".join(random.choices(string.ascii_lowercase, k=7))
+
+def compute_id(nick: str, user: str, host: str) -> str:
+    return f"{nick}!{user}@{host}"
+
 class ClientRegistration:
     def __init__(self, client: socket.socket) -> None:
         self.client = client
-        # TODO: Random nick/user/host by default
-        self.nick = "?"
-        self.user = "?"
-        self.host = "internet"
+        self.nick = f"n{random_id()}"
+        self.nick_set = False
+        self.user = f"u{random_id()}"
+        self.host = f"h{random_id()}"
         self.channels = []
 
     def id(self) -> str:
-        return f"{self.nick}!{self.user}@{self.host}"
+        return compute_id(self.nick, self.user, self.host)
 
 # IRC numeric replies
 class Reply(Enum):
@@ -115,6 +124,7 @@ class Reply(Enum):
     NameReply = 353
     EndOfNames = 366
     NoMotd = 422
+    NicknameInUse = 433
 
 # Server
 class IrcServer(TcpServer):
@@ -131,6 +141,7 @@ class IrcServer(TcpServer):
         self.server_name = server_name
         self.version = 0.1
         self.channels: dict[str, list[ClientRegistration]] = dict()
+        self.users: dict[str, ClientRegistration] = dict()
 
     def encode(self, message: str) -> bytes:
         return f"{message}\r\n".encode("utf-8")
@@ -147,7 +158,9 @@ class IrcServer(TcpServer):
                     self.remove_client(client_data.client)
 
     def create_client_data(self, client: socket.socket) -> ClientRegistration:
-        return ClientRegistration(client)
+        client_data = ClientRegistration(client)
+        self.users[client_data.nick] = client_data
+        return client_data
     
     def handle(self, client_data: ClientRegistration, message: bytes) -> None:
         text = message.decode("utf-8")
@@ -182,16 +195,22 @@ class IrcServer(TcpServer):
             client_data.channels.remove(channel)
 
     def remove_client(self, client: socket.socket, reason = "") -> None:
-        # Need to also remove channel lists and send QUIT messages
+        # Need to also remove from user/channel dictionaries and send QUIT messages
         key = self.selector.get_map().get(client)
         client_data = key.data if key else None
         super().remove_client(client)
         if client_data:
+            # Remove from user list
+            assert isinstance(client_data, ClientRegistration)
+            if client_data.nick in self.users:
+                del self.users[client_data.nick]
+            # Remove from channels
             neighbors = set()
             for channel in client_data.channels:
                 if channel in self.channels:
                     self.leave_channel(client_data, channel)
                     neighbors = neighbors.union(self.channel_get_members(channel))
+            # Send QUIT updates to interested (i.e. in shared channel) clients
             self.send_text_each(neighbors, f":{client_data.id()} QUIT :Quit: {reason}")
 
     def handle_command(self, client_data: ClientRegistration, command: Command) -> None:
@@ -202,10 +221,18 @@ class IrcServer(TcpServer):
                         case "LS":
                             self.reply(client_data, "CAP * ACK")
             case "NICK":
-                # TODO: Check for collision
-                # TODO: Truncate, if needed
                 if command.subcommands and len(command.subcommands) >= 1:
-                    client_data.nick = command.subcommands[0]
+                    nick = command.subcommands[0]
+                    if nick in self.users:
+                        self.reply_numeric(client_data, Reply.NicknameInUse, ":Nickname already in use")
+                    else:
+                        old_nick = client_data.nick
+                        if old_nick in self.users: del self.users[old_nick]
+                        client_data.nick = nick
+                        self.users[nick] = client_data
+                        if client_data.nick_set:
+                            self.send_text_each([client_data], f":{compute_id(old_nick, client_data.user, client_data.host)} NICK {nick}")
+                        client_data.nick_set = True
             case "USER":
                 if command.subcommands and len(command.subcommands) >= 1:
                     client_data.user = command.subcommands[0]
@@ -224,7 +251,6 @@ class IrcServer(TcpServer):
                 if command.subcommands:
                     channels = command.subcommands[0].split(",")
                     for channel in channels:
-                        # TODO: Handle channel "0" as "part all"?
                         if len(channel) >= 1 and channel[0] == "#":
                             if not channel in client_data.channels:
                                 client_data.channels.append(channel)
@@ -258,9 +284,8 @@ class IrcServer(TcpServer):
                             if target in self.channels and client_data in self.channels[target]:
                                 self.send_text_each(self.channels[target], message, client_data)
                         else:
-                            # TODO: Maintain a mapping from nick -> client_data
-                            for _target_client, target_client_data in filter(lambda t: t[1].nick == target, self.enumerate_clients()):
-                                self.send_text_each([target_client_data], message)
+                            if target in self.users:
+                                self.send_text_each([self.users[target]], message)
 
 server = IrcServer()
 server.run()
