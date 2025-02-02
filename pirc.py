@@ -1,6 +1,7 @@
 import re
 import selectors
 import socket
+from _collections_abc import Iterable
 from enum import Enum
 
 # Generic select-based TCP server
@@ -31,6 +32,10 @@ class TcpServer:
         client_data = self.create_client_data(client)
         client.setblocking(False)
         self.selector.register(client, selectors.EVENT_READ, client_data)
+    
+    def remove_client(self, client: socket.socket) -> None:
+        self.selector.unregister(client)
+        client.close()
             
     def read(self, client: socket.socket, client_data) -> None:
         try:
@@ -39,8 +44,7 @@ class TcpServer:
             self.handle(client_data, message)
         except:
             # Treat all errors as disconnections
-            self.selector.unregister(client)
-            client.close()
+            self.remove_client(client)
 
     def send(self, client: socket.socket, message: bytes):
         client.sendall(message)
@@ -60,7 +64,7 @@ class TcpServer:
         raise NotImplementedError()
 
 # IRC command parser
-command_pattern = r"^(?P<source>:[a-zA-Z0-9@#*_.+!\-]+ )?(?P<command>[A-Z]+)(?P<subcommands>( [a-zA-Z0-9@#*_.+!\-]+)*)( :(?P<content>.*))?$"
+command_pattern = r"^(?P<source>:[a-zA-Z0-9@#*_.+!\-]+ )?(?P<command>[A-Z]+)(?P<subcommands>( [a-zA-Z0-9@#*_.+!\-]+)*?)( :(?P<content>.*))?$"
 
 class Command:
     def __init__(self, text: str) -> None:
@@ -84,6 +88,7 @@ class ClientRegistration:
         self.nick = "?"
         self.user = "?"
         self.host = "internet"
+        self.channels = []
 
     def id(self) -> str:
         return f"{self.nick}!{self.user}@{self.host}"
@@ -122,7 +127,7 @@ class IrcServer(TcpServer):
     def encode(self, message: str) -> bytes:
         return f"{message}\r\n".encode("utf-8")
 
-    def send_text_each(self, clients: list[ClientRegistration], message: str, excluded: ClientRegistration|None = None) -> None:
+    def send_text_each(self, clients: Iterable[ClientRegistration], message: str, excluded: ClientRegistration|None = None) -> None:
         # TODO: If a send fails, disconnect *that* client and not the sender!
         print(f"-->  {message}")
         bytes = self.encode(message)
@@ -151,6 +156,33 @@ class IrcServer(TcpServer):
         if not channel in self.channels:
             self.channels[channel] = []
         return self.channels[channel]
+    
+    # Note: Needed a safe way to retrieve members of a channel, even if a channel was just deleted
+    def channel_get_members(self, channel: str) -> list[ClientRegistration]:
+        return self.channels[channel] if channel in self.channels else []
+
+    def leave_channel(self, client_data: ClientRegistration, channel: str):
+        if channel in self.channels:
+            list = self.channels[channel]
+            if client_data in list:
+                list.remove(client_data)
+                if len(list) <= 0:
+                    del self.channels[channel]
+        if channel in client_data.channels:
+            client_data.channels.remove(channel)
+
+    def remove_client(self, client: socket.socket, reason = "") -> None:
+        # Need to also remove channel lists and send QUIT messages
+        key = self.selector.get_map().get(client)
+        client_data = key.data if key else None
+        super().remove_client(client)
+        if client_data:
+            neighbors = set()
+            for channel in client_data.channels:
+                if channel in self.channels:
+                    self.leave_channel(client_data, channel)
+                    neighbors = neighbors.union(self.channel_get_members(channel))
+            self.send_text_each(neighbors, f":{client_data.id()} QUIT :Quit: {reason}")
 
     def handle_command(self, client_data: ClientRegistration, command: Command) -> None:
         match command.command:
@@ -184,25 +216,24 @@ class IrcServer(TcpServer):
                     for channel in channels:
                         # TODO: Handle channel "0" as "part all"
                         if len(channel) >= 1 and channel[0] == "#":
-                            clients = self.channel_get(channel)
-                            if not client_data in clients:
+                            if not channel in client_data.channels:
+                                client_data.channels.append(channel)
+                                clients = self.channel_get(channel)
                                 clients.append(client_data)
                                 self.send_text_each(clients, f":{client_data.id()} JOIN {channel}")
                                 self.reply_numeric(client_data, Reply.Topic, f"{channel} :topic")
                                 # TODO: Split nick list, if needed
                                 self.reply_numeric(client_data, Reply.NameReply, f"= {channel} :{",".join([c.nick for c in clients])}")
                                 self.reply_numeric(client_data, Reply.EndOfNames, f"{channel} :End of /NAMES list")
-            # TODO: QUIT message
+            case "QUIT":
+                self.remove_client(client_data.client, command.content if command.content else "")
             case "PART":
                 if command.subcommands and len(command.subcommands) >= 1:
                     channels = command.subcommands[0].split(",")
                     for channel in channels:
-                        if len(channel) >= 1 and channel[0] == "#" and channel in self.channels and client_data in self.channels[channel]:
-                            clients = self.channels[channel]
-                            clients.remove(client_data)
-                            self.send_text_each([client_data, *clients], f":{client_data.id()} PART {channel}")
-                            if len(clients) <= 0:
-                                del self.channels[channel]
+                        if len(channel) >= 1 and channel[0] == "#" and channel in self.channels and channel in client_data.channels:
+                            self.leave_channel(client_data, channel)
+                            self.send_text_each([client_data, *self.channel_get_members(channel)], f":{client_data.id()} PART {channel}")
             case "LIST":
                 self.reply_numeric(client_data, Reply.ListStart, "Channel :Users  Name")
                 for channel, clients in self.channels.items():
@@ -219,7 +250,6 @@ class IrcServer(TcpServer):
                         else:
                             for _target_client, target_client_data in filter(lambda t: t[1].nick == target, self.enumerate_clients()):
                                 self.send_text_each([target_client_data], message)
-
 
 server = IrcServer()
 server.run()
