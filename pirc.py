@@ -53,10 +53,6 @@ class TcpServer:
                 result.append((k.fileobj, k.data))
         return result
 
-    def broadcast(self, message: bytes, excluded: socket.socket|None = None):
-        for client, _data in self.enumerate_clients(excluded):
-            self.send(client, message)
-
     def create_client_data(self, client: socket.socket):
         raise NotImplementedError()
 
@@ -69,7 +65,6 @@ command_pattern = r"^(?P<source>:[a-zA-Z0-9@#*_.+!\-]+ )?(?P<command>[A-Z]+)(?P<
 class Command:
     def __init__(self, text: str) -> None:
         # Parse message
-        print(f"<-- {text}")
         match = re.match(command_pattern, text)
         if not match: raise SyntaxError("Invalid message received!")
         source = match["source"]
@@ -127,23 +122,14 @@ class IrcServer(TcpServer):
     def encode(self, message: str) -> bytes:
         return f"{message}\r\n".encode("utf-8")
 
-    def send_text(self, client: socket.socket, message: str) -> None:
-        print(f"-->   {message}")
-        super().send(client, self.encode(message))
-
     def send_text_each(self, clients: list[ClientRegistration], message: str, excluded: ClientRegistration|None = None) -> None:
         # TODO: If a send fails, disconnect *that* client and not the sender!
+        print(f"-->  {message}")
         bytes = self.encode(message)
         for client_data in clients:
             if not client_data == excluded:
                 # TODO: This skips logging!
                 self.send(client_data.client, bytes)
-
-    def broadcast_text(self, message: str, exclude: socket.socket|None = None) -> None:
-        self.broadcast(self.encode(message), exclude)
-    
-    def broadcast_text_others(self, client_data: ClientRegistration, message: str) -> None:
-        self.broadcast_text(message, client_data.client)
 
     def create_client_data(self, client: socket.socket) -> ClientRegistration:
         return ClientRegistration(client)
@@ -152,10 +138,11 @@ class IrcServer(TcpServer):
         text = message.decode("utf-8")
         lines = text.strip().split("\r\n")
         for line in lines:
+            print(f"<-- {line}")
             self.handle_command(client_data, Command(line))
     
     def reply(self, client_data: ClientRegistration, text: str) -> None:
-        self.send_text(client_data.client, text)
+        self.send_text_each([client_data], text)
 
     def reply_numeric(self, client_data: ClientRegistration, reply: Reply, text: str) -> None:
         self.reply(client_data, f"{str(reply.value).zfill(3)} {client_data.nick} {text}")
@@ -213,7 +200,7 @@ class IrcServer(TcpServer):
                         if len(channel) >= 1 and channel[0] == "#" and channel in self.channels and client_data in self.channels[channel]:
                             clients = self.channels[channel]
                             clients.remove(client_data)
-                            self.broadcast_text(f":{client_data.id()} PART {channel}")
+                            self.send_text_each([client_data, *clients], f":{client_data.id()} PART {channel}")
                             if len(clients) <= 0:
                                 del self.channels[channel]
             case "LIST":
@@ -230,8 +217,8 @@ class IrcServer(TcpServer):
                             if target in self.channels and client_data in self.channels[target]:
                                 self.send_text_each(self.channels[target], message, client_data)
                         else:
-                            for target_client, _target_client_data in filter(lambda t: t[1].nick == target, self.enumerate_clients()):
-                                self.send_text(target_client, message)
+                            for _target_client, target_client_data in filter(lambda t: t[1].nick == target, self.enumerate_clients()):
+                                self.send_text_each([target_client_data], message)
 
 
 server = IrcServer()
