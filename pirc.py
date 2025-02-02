@@ -133,7 +133,6 @@ class IrcServer(TcpServer):
         bytes = self.encode(message)
         for client_data in clients:
             if not client_data == excluded:
-                # TODO: This skips logging!
                 self.send(client_data.client, bytes)
 
     def create_client_data(self, client: socket.socket) -> ClientRegistration:
