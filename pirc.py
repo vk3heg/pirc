@@ -247,6 +247,7 @@ class IrcServer(TcpServer):
                             if target in self.channels and client_data in self.channels[target]:
                                 self.send_text_each(self.channels[target], message, client_data)
                         else:
+                            # TODO: Maintain a mapping from nick -> client_data
                             for _target_client, target_client_data in filter(lambda t: t[1].nick == target, self.enumerate_clients()):
                                 self.send_text_each([target_client_data], message)
 
