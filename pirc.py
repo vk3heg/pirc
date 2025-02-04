@@ -74,7 +74,7 @@ class TcpServer:
         raise NotImplementedError()
 
 # IRC command parser
-command_pattern = r"^(?P<source>:[a-zA-Z0-9@#*_.+!\-]+ )?(?P<command>[A-Z]+)(?P<subcommands>( [a-zA-Z0-9@#*_.+!\-]+)*?)( :(?P<content>.*))?$"
+command_pattern = r"^(?P<source>:[a-zA-Z0-9@#*_.+!\[\]{}\\|\-]+ )?(?P<command>[A-Z]+)(?P<subcommands>( [a-zA-Z0-9@#*_.+!\[\]{}\\|\-]+)*?)( :(?P<content>.*))?$"
 
 class Command:
     def __init__(self, text: str) -> None:

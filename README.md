@@ -33,7 +33,6 @@ Specifically:
 ## TODOs
 * Implement message of the day (MOTD)
 * Consider implementing topic management
-* Update nickname restrictions to allow alphanumerics, brackets, braces, backslashes, and pipes, per the [IRC documentation](https://modern.ircdocs.horse/#nick-message)
 
 ## General IRC Resources
 * https://modern.ircdocs.horse/
