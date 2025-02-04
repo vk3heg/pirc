@@ -5,7 +5,7 @@ Note: **pirc does not use or support encryption**, so never use it for anything 
 
 ## Usage
 ```
-python pirc.py <interface> <port>
+python pirc.py <interface> <port> [<MOTD file>]
 ```
 
 ## Why?
@@ -31,7 +31,6 @@ Specifically:
 * No concept of operators
 
 ## TODOs
-* Implement message of the day (MOTD)
 * Consider implementing topic management
 
 ## General IRC Resources

@@ -4,6 +4,8 @@ import re
 import selectors
 import socket
 import string
+import sys
+import textwrap
 from _collections_abc import Iterable
 from enum import Enum
 from os import environ
@@ -74,7 +76,7 @@ class TcpServer:
         raise NotImplementedError()
 
 # IRC command parser
-command_pattern = r"^(?P<source>:[a-zA-Z0-9@#*_.+!\[\]{}\\|\-]+ )?(?P<command>[A-Z]+)(?P<subcommands>( [a-zA-Z0-9@#*_.+!\[\]{}\\|\-]+)*?)( :(?P<content>.*))?$"
+command_pattern = r"^(?P<source>:[a-zA-Z0-9@#*_.+!\[\]{}\\|\-]+ )?(?P<command>([A-Z]+)|motd)(?P<subcommands>( [a-zA-Z0-9@#*_.+!\[\]{}\\|\-]+)*?)( :(?P<content>.*))?$"
 
 class Command:
     def __init__(self, text: str) -> None:
@@ -123,6 +125,9 @@ class Reply(Enum):
     Topic = 332
     NameReply = 353
     EndOfNames = 366
+    Motd = 372
+    MotdStart = 375
+    EndOfMotd = 376
     NoMotd = 422
     NicknameInUse = 433
 
@@ -135,6 +140,7 @@ class IrcServer(TcpServer):
             max_pending_clients=5,
             network_name="pircnet",
             server_name="pirc",
+            motd: Iterable[str]=[],
             ):
         super().__init__(host, port, 512, max_pending_clients)
         self.network_name = network_name
@@ -142,6 +148,10 @@ class IrcServer(TcpServer):
         self.version = 0.1
         self.channels: dict[str, list[ClientRegistration]] = dict()
         self.users: dict[str, ClientRegistration] = dict()
+        self.motd = []
+        for line in motd:
+            for l in (textwrap.wrap(line) if line else [""]):
+                self.motd.append(l)
 
     def encode(self, message: str) -> bytes:
         return f"{message}\r\n".encode("utf-8")
@@ -174,6 +184,10 @@ class IrcServer(TcpServer):
 
     def reply_numeric(self, client_data: ClientRegistration, reply: Reply, text: str) -> None:
         self.reply(client_data, f"{str(reply.value).zfill(3)} {client_data.nick} {text}")
+
+    def reply_numerics(self, client_data: ClientRegistration, replies: list[tuple[Reply, str]]) -> None:
+        for reply, text in replies:
+            self.reply_numeric(client_data, reply, text)
 
     def channel_get(self, channel: str) -> list[ClientRegistration]:
         if not channel in self.channels:
@@ -213,6 +227,14 @@ class IrcServer(TcpServer):
             # Send QUIT updates to interested (i.e. in shared channel) clients
             self.send_text_each(neighbors, f":{client_data.id()} QUIT :Quit: {reason}")
 
+    def send_motd(self, client_data: ClientRegistration) -> None:
+        if self.motd:
+            for i, line in enumerate(self.motd):
+                self.reply_numeric(client_data, Reply.MotdStart if i == 0 else Reply.Motd, f":- {line}")
+            self.reply_numeric(client_data, Reply.EndOfMotd, ":-")
+        else:
+            self.reply_numeric(client_data, Reply.NoMotd, ":MOTD File is missing")
+
     def handle_command(self, client_data: ClientRegistration, command: Command) -> None:
         match command.command:
             case "CAP":
@@ -236,13 +258,16 @@ class IrcServer(TcpServer):
             case "USER":
                 if command.subcommands and len(command.subcommands) >= 1:
                     client_data.user = command.subcommands[0]
-                    self.reply_numeric(client_data, Reply.Welcome, f":Welcome, {client_data.id()}")
-                    self.reply_numeric(client_data, Reply.YourHost, f":Your host is {self.server_name}, running version {self.version}")
-                    self.reply_numeric(client_data, Reply.Created, ":This server was created today")
-                    self.reply_numeric(client_data, Reply.MyInfo, f"{self.server_name} {self.version}  ")
-                    self.reply_numeric(client_data, Reply.ISupport, f"NETWORK={self.network_name} :are supported by this server")
-                    # TODO: MOTD
-                    self.reply_numeric(client_data, Reply.NoMotd, ":MOTD File is missing")
+                    self.reply_numerics(client_data, [
+                        (Reply.Welcome,     f":Welcome, {client_data.id()}"),
+                        (Reply.YourHost,    f":Your host is {self.server_name}, running version {self.version}"),
+                        (Reply.Created,     ":This server was created today"),
+                        (Reply.MyInfo,      f"{self.server_name} {self.version}  "),
+                        (Reply.ISupport,    f"NETWORK={self.network_name} :are supported by this server"),
+                    ])
+                    self.send_motd(client_data)
+            case "MOTD" | "motd": # Very strange that this is sent in lowercase, unlike all other commands...
+                self.send_motd(client_data)
             case "PING":
                 if command.subcommands:
                     self.reply(client_data, f'PONG {" ".join(command.subcommands)}')
@@ -257,10 +282,12 @@ class IrcServer(TcpServer):
                                 clients = self.channel_get(channel)
                                 clients.append(client_data)
                                 self.send_text_each(clients, f":{client_data.id()} JOIN {channel}")
-                                self.reply_numeric(client_data, Reply.Topic, f"{channel} :topic")
                                 # TODO: Split nick list, if needed
-                                self.reply_numeric(client_data, Reply.NameReply, f"= {channel} :{",".join([c.nick for c in clients])}")
-                                self.reply_numeric(client_data, Reply.EndOfNames, f"{channel} :End of /NAMES list")
+                                self.reply_numerics(client_data, [
+                                    (Reply.Topic, f"{channel} :topic"),
+                                    (Reply.EndOfNames, f"{channel} :End of /NAMES list"),
+                                    (Reply.NameReply, f"= {channel} :{",".join([c.nick for c in clients])}"),
+                                ])
             case "QUIT":
                 self.remove_client(client_data.client, command.content if command.content else "")
             case "PART":
@@ -287,5 +314,10 @@ class IrcServer(TcpServer):
                             if target in self.users:
                                 self.send_text_each([self.users[target]], message)
 
-server = IrcServer()
+motd = ""
+if len(sys.argv) >= 4:
+    with open(sys.argv[3]) as f:
+        motd = f.read().splitlines()
+
+server = IrcServer(host=sys.argv[1], port=int(sys.argv[2]), motd=motd)
 server.run()
