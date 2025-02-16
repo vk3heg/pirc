@@ -5,8 +5,10 @@ Note: **pirc does not use or support encryption**, so never use it for anything 
 
 ## Usage
 ```
-python pirc.py <interface> <port> [<MOTD file>]
+python pirc.py <host/IP>[:<port>] [<MOTD file>]
 ```
+
+Port and MOTD file are optional (default port is 6667). Example: `python pirc.py localhost:1234 motd.txt` or `python pirc.py localhost`.
 
 ## Why?
 Basically, I wanted a chat server that I could use from old/slow/vintage computers.

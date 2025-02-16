@@ -226,6 +226,7 @@ class IrcServer(TcpServer):
                     neighbors = neighbors.union(self.channel_get_members(channel))
             # Send QUIT updates to interested (i.e. in shared channel) clients
             self.send_text_each(neighbors, f":{client_data.id()} QUIT :Quit: {reason}")
+            log.info(f"User disconnected: {client_data.id()}")
 
     def send_motd(self, client_data: ClientRegistration) -> None:
         if self.motd:
@@ -266,7 +267,7 @@ class IrcServer(TcpServer):
                         (Reply.ISupport,    f"NETWORK={self.network_name} :are supported by this server"),
                     ])
                     self.send_motd(client_data)
-                    log.info(f"New user connected: {client_data.nick}")
+                    log.info(f"New user connected: {client_data.id()}")
             case "MOTD" | "motd": # Very strange that this is sent in lowercase, unlike all other commands...
                 self.send_motd(client_data)
             case "PING":
@@ -315,10 +316,23 @@ class IrcServer(TcpServer):
                             if target in self.users:
                                 self.send_text_each([self.users[target]], message)
 
+def print_usage():
+    print(f"\nUSAGE: {sys.argv[0]} <host/IP>[:<port>] [MOTD file]\n")
+
+if len(sys.argv) <= 1 or sys.argv[1] == "--help":
+    print_usage()
+    exit(0)
+
 motd = ""
-if len(sys.argv) >= 4:
-    with open(sys.argv[3]) as f:
+if len(sys.argv) >= 3:
+    with open(sys.argv[2]) as f:
         motd = f.read().splitlines()
 
-server = IrcServer(host=sys.argv[1], port=int(sys.argv[2]), motd=motd)
+bind_info = re.match(r"^(?P<host>[^:]*?)(:(?P<port>[0-9]+))?$", sys.argv[1])
+if (not bind_info):
+    print(f"ERROR: couldn't parse bind info: \"{sys.argv[1]}\"")
+    print_usage()
+    exit(-1)
+
+server = IrcServer(host=bind_info["host"], port=int(bind_info["port"] or 6667), motd=motd)
 server.run()
