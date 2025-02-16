@@ -266,6 +266,7 @@ class IrcServer(TcpServer):
                         (Reply.ISupport,    f"NETWORK={self.network_name} :are supported by this server"),
                     ])
                     self.send_motd(client_data)
+                    log.info(f"New user connected: {client_data.nick}")
             case "MOTD" | "motd": # Very strange that this is sent in lowercase, unlike all other commands...
                 self.send_motd(client_data)
             case "PING":
