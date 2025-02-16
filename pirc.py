@@ -288,7 +288,7 @@ class IrcServer(TcpServer):
                                 self.reply_numerics(client_data, [
                                     (Reply.Topic, f"{channel} :topic"),
                                     (Reply.EndOfNames, f"{channel} :End of /NAMES list"),
-                                    (Reply.NameReply, f"= {channel} :{",".join([c.nick for c in clients])}"),
+                                    (Reply.NameReply, f"= {channel} :{','.join([c.nick for c in clients])}"),
                                 ])
             case "QUIT":
                 self.remove_client(client_data.client, command.content if command.content else "")
