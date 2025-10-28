@@ -32,10 +32,7 @@ Specifically:
 * No user accounts or authentication
 * No concept of operators
 
-## TODOs
-* Consider implementing topic management
-
-## General IRC Resources
+# General IRC Resources
 * https://modern.ircdocs.horse/
 * https://ircv3.net/specs/extensions/capability-negotiation.html
 * http://chi.cs.uchicago.edu/chirc/irc_examples.html
